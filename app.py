@@ -37,13 +37,17 @@ if "users" not in st.session_state:
     if os.path.exists(USERS_FILE):
         st.session_state.users = load_users()
     else:
-        default_user = f"u-{uuid.uuid4().hex[:6]}"
+        default_user = f"Agent-{uuid.uuid4().hex[:4]}"
         st.session_state.users = [default_user]
         save_users(st.session_state.users)
 
 
 if "selected_user" not in st.session_state:
-    st.session_state.selected_user = st.session_state.users[0]
+    if st.session_state.users:
+        st.session_state.selected_user = st.session_state.users[0]
+    else:
+        st.session_state.selected_user = None  # Or leave it unset
+
 
 if "mem" not in st.session_state:
     st.session_state.mem = Memory(MemoryConfig())
@@ -57,10 +61,15 @@ if "session_chat" not in st.session_state:
 # -----------------------------
 with st.sidebar:
     st.markdown("### 🧑‍💻 Select or Add User")
-    user = st.selectbox("Active User ID", st.session_state.users, index=st.session_state.users.index(st.session_state.selected_user))
+    if st.session_state.users:
+        selected_index = st.session_state.users.index(st.session_state.selected_user)
+        user = st.selectbox("Active User ID", st.session_state.users, index=selected_index)
+    else:
+        st.warning("No users available. Please add a new user.")
+        user = None
 
     if st.button("➕ Add New User"):
-        new_id = f"u-{uuid.uuid4().hex[:6]}"
+        new_id = f"Agent-{uuid.uuid4().hex[:4]}"
         st.session_state.users.append(new_id)
         st.session_state.selected_user = new_id
         save_users(st.session_state.users)
@@ -75,6 +84,32 @@ with st.sidebar:
     st.markdown("---")
     st.code(f"User ID: {st.session_state.selected_user}")
     st.success("Short-term & Long-term memory enabled")
+
+    # Button to trigger confirmation popup
+    if st.button("🗑️ Clear All Users"):
+        st.session_state.show_popup = True
+
+    # Show the confirmation popup
+    if st.session_state.get("show_popup", False):
+        st.warning("⚠️ Are you sure you want to delete all users? This cannot be undone.")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("✅ Yes, Clear"):
+                st.session_state.users = []
+                st.session_state.selected_user = ""
+                st.session_state.session_chat = []
+                save_users([])  # Clear users.json
+                st.success("✅ All users cleared.")
+                st.session_state.show_popup = False
+                st.rerun()
+
+        with col2:
+            if st.button("❌ Cancel"):
+                st.session_state.show_popup = False
+        st.rerun()
+
+
 
 # -----------------------------
 # 💬 Chat Display
