@@ -1,0 +1,42 @@
+# Virtual environment
+venv/
+.env
+*.env
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Git and OS metadata
+.DS_Store
+*.swp
+*.swo
+*.bak
+
+# VSCode / Devcontainer / IDE config
+.vscode/
+.devcontainer/
+
+# Python egg and packaging
+*.egg-info/
+dist/
+build/
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# Data
+user_data/*
+*.db
+*.sqlite
+*.log
+
+# Test or throwaway folders
+Z_test/
+tests/__pycache__/
+
+# Hidden files
+.*
+!.gitignore
