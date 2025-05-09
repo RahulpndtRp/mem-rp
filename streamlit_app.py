@@ -48,8 +48,12 @@ if "session_chat" not in st.session_state:
 # -----------------------------
 with st.sidebar:
     st.markdown("### 👤 Select User")
-    user = st.selectbox("User ID", st.session_state.users, index=st.session_state.users.index(st.session_state.selected_user))
-
+    if st.session_state.users:
+        selected_index = st.session_state.users.index(st.session_state.selected_user) if st.session_state.selected_user in st.session_state.users else 0
+        user = st.selectbox("User ID", st.session_state.users, index=selected_index)
+    else:
+        st.warning("No users available. Please add a new user.")
+        user = None
     if st.button("➕ Add User"):
         new_user = f"Agent-{uuid.uuid4().hex[:4]}"
         st.session_state.users.append(new_user)
@@ -69,11 +73,27 @@ with st.sidebar:
     st.success("Short-term + Long-term memory is active")
 
     if st.button("🗑️ Clear All Users"):
-        st.session_state.users.clear()
-        st.session_state.selected_user = None
-        st.session_state.session_chat = []
-        save_users([])
+        st.session_state.show_popup = True
+
+    if st.session_state.get("show_popup", False):
+        st.warning("⚠️ Are you sure you want to delete all users? This cannot be undone.")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("✅ Yes, Clear"):
+                st.session_state.users = []
+                st.session_state.selected_user = ""
+                st.session_state.session_chat = []
+                save_users([])  # Clear users.json
+                st.success("✅ All users cleared.")
+                st.session_state.show_popup = False
+                st.rerun()
+
+        with col2:
+            if st.button("❌ Cancel"):
+                st.session_state.show_popup = False
         st.rerun()
+
 
 # -----------------------------
 # 💬 Display Chat
