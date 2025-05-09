@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 from my_mem.configs.base import MemoryConfig
 from my_mem.memory.main import Memory
 from my_mem.rag.rag_pipeline import RAGPipeline
-
+from typing import Generator
 logger = logging.getLogger(__name__)
 
 class MemoryClient:
@@ -34,6 +34,14 @@ class MemoryClient:
         """
         self.memory.add(prompt, user_id=user_id, infer=True)
         return self.rag.query(prompt, user_id=user_id)
+    
+    def stream_rag(self, prompt: str, *, user_id: str) -> Generator[str, None, None]:
+        """
+        Streaming version of RAG query — yields the response token by token.
+        """
+        self.memory.add(prompt, user_id=user_id, infer=True)
+        yield from self.rag.stream_query(prompt, user_id=user_id)
+
 
     def reset_memory(self) -> None:
         """Resets FAISS + SQLite + STM buffers (if reset() supported)."""

@@ -12,12 +12,11 @@ Author: chatGPT (2025-05-09)
 from __future__ import annotations
 
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple, Generator
 
 from my_mem.memory.main       import Memory
 from my_mem.utils.factory     import LlmFactory
 from my_mem.configs.base      import MemoryConfig
-
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +35,7 @@ If you don’t have enough information, it’s okay to ask clarifying questions.
 """
 
 
-def _build_context(results: List[Dict[str, Any]]) -> str:
+def _build_context(results: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, str]]]:
     """
     Turns Memory.search() results → numbered context block.
     Returns the block **and** a light “sources” list for downstream use.
@@ -71,6 +70,25 @@ class RAGPipeline:
         answer = self._ask_llm(question, context_block)
 
         return {"answer": answer, "sources": sources}
+    
+    
+    
+    def stream_query(self, query: str, user_id: str) -> Generator[str, None, None]:
+        retrieved = self.memory.search(query, user_id=user_id, limit=self.top_k, ltm_threshold=self.ltm_threshold)["results"]
+        logger.debug(f"RAG retrieved {len(retrieved)} memories")
+
+        context_block, _ = _build_context(retrieved)
+        system_prompt = _CITATION_SYSTEM_PROMPT
+        user_prompt = f"Context:\n{context_block}\n\nQ: {query}"
+
+        yield from self.llm.stream_response(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+
+
 
     # internal ------------------------------------------------------------
     def _ask_llm(self, question: str, context: str) -> str:

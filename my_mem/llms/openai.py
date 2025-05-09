@@ -21,3 +21,19 @@ class OpenAILLM:
             response_format = response_format,
         )
         return chat.choices[0].message.content or chat.choices[0].message.tool_calls[0].to_dict()
+
+    def stream_response(self, messages, response_format=None, tools=None):
+        chat = self.client.chat.completions.create(
+            model       = self.cfg.model,
+            temperature = self.cfg.temperature,
+            max_tokens  = self.cfg.max_tokens,
+            top_p       = self.cfg.top_p,
+            messages    = messages,
+            tools       = tools,
+            response_format = response_format,
+            stream=True
+        )
+        for chunk in chat:
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield delta.content
