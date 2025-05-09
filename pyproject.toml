@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "memrp"
+version = "0.1.0"
+description = ""
+authors = ["Rahul Pandey <pyrahulpndt@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+letta-client = "^0.1.141"
+langchain-core = "^0.3.59"
+requests = "^2.32.3"
+numpy = "^2.2.5"
+fastapi = "^0.115.12"
+pytz = "^2025.2"
+openai = "^1.78.0"
+faiss-cpu = "^1.11.0"
+streamlit = "^1.45.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,9 @@
+faiss-cpu
+numpy
+httpx
+pydantic
+python-dotenv
+pytz
+openai
+streamlit
+
