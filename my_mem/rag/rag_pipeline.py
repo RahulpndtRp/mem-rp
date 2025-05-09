@@ -22,9 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 _CITATION_SYSTEM_PROMPT = """
-You are an assistant that answers using the provided context.
-Cite supporting facts with bracketed numbers, e.g. “[2]”.
-If the answer cannot be derived, say you don’t have enough information.
+You are a helpful assistant engaged in an ongoing conversation with a user.
+You have access to the user’s short-term memory (recent turns) and long-term memory (facts, history, preferences).
+
+Use this context to answer **naturally and conversationally**.
+If a follow-up depends on recent turns, maintain continuity.
+If useful, leverage known facts about the user — but avoid repeating them unless relevant.
+
+Always prefer **fluid, friendly, and accurate responses**.
+Never mention memory IDs or numbered sources.
+
+If you don’t have enough information, it’s okay to ask clarifying questions.
 """
 
 
@@ -46,17 +54,17 @@ def _build_context(results: List[Dict[str, Any]]) -> str:
 class RAGPipeline:
     """Small wrapper so you can do:  rag = RAGPipeline(mem); rag.query("…")"""
 
-    def __init__(self, memory: Memory, top_k: int = 5):
-        self.memory = memory
-        self.top_k  = top_k
+    def __init__(self, memory: Memory, top_k: int = 5, ltm_threshold: float = 0.75):
+        self.memory        = memory
+        self.top_k         = top_k
 
-        # Re-use same LLM that Memory already built
-        self.llm = memory.llm
+        self.ltm_threshold = ltm_threshold
+        self.llm           = memory.llm
 
     # public --------------------------------------------------------------
     def query(self, question: str, *, user_id: str) -> Dict[str, Any]:
         """Run RAG & return { answer, sources }."""
-        retrieved = self.memory.search(question, user_id=user_id, limit=self.top_k)["results"]
+        retrieved = self.memory.search(question, user_id=user_id, limit=self.top_k, ltm_threshold=self.ltm_threshold)["results"]
         logger.debug(f"RAG retrieved {len(retrieved)} memories")
 
         context_block, sources = _build_context(retrieved)

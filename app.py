@@ -1,15 +1,11 @@
-
-
 import streamlit as st
 import uuid
 import os, json
 
 os.environ["OPENAI_API_KEY"] = st.secrets["openai"]["api_key"]
 
-from my_mem.memory.main import Memory
+from my_mem.client import MemoryClient
 from my_mem.configs.base import MemoryConfig
-
-
 
 # -----------------------------
 # 📦 Paths for profiles only
@@ -50,7 +46,7 @@ if "selected_user" not in st.session_state:
 
 
 if "mem" not in st.session_state:
-    st.session_state.mem = Memory(MemoryConfig())
+    st.session_state.mem = MemoryClient(MemoryConfig())
 mem = st.session_state.mem
 
 if "session_chat" not in st.session_state:
@@ -60,7 +56,7 @@ if "session_chat" not in st.session_state:
 # 👤 Sidebar: User Management
 # -----------------------------
 with st.sidebar:
-    st.markdown("### 🧑‍💻 Select or Add User")
+    st.markdown("### 🧑‍💼 Select or Add User")
     if st.session_state.users:
         selected_index = st.session_state.users.index(st.session_state.selected_user)
         user = st.selectbox("Active User ID", st.session_state.users, index=selected_index)
@@ -128,22 +124,17 @@ for chat in st.session_state.session_chat:
 user_input = st.chat_input("Type your message here...")
 if user_input:
     st.session_state.session_chat.append({"user": user_input})
-    # Display user message immediately
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
         with st.spinner("🔄 Thinking..."):
             user_id = st.session_state.selected_user
+            mem.add_message(user_input, user_id=user_id, infer=True)
+            rag_result = mem.query_rag(user_input, user_id=user_id)
 
-            # Backend handles memory
-            mem.add(user_input, user_id=user_id, infer=True)
-            results = mem.search(user_input, user_id=user_id)["results"]
-            context = "\n".join([r["memory"] for r in results])
-            sources = [f"{r['id']}: {r['memory']}" for r in results]
-
-            prompt = f"Context:\n{context}\n\nQuestion: {user_input}"
-            reply = mem.llm.generate_response(messages=[{"role": "user", "content": prompt}])
+            reply = rag_result["answer"]
+            sources = [f"{s['id']}: {s['text']}" for s in rag_result["sources"]]
 
             st.session_state.session_chat[-1]["bot"] = f"{reply.strip()}\n\n---\n**Sources:**\n" + "\n".join(f"• {s}" for s in sources[:3])
             st.rerun()

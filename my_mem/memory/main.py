@@ -141,14 +141,14 @@ class Memory:
     # ────────────────────────────────────────────────────────────────────────────
     #  SEARCH  (blend STM + FAISS and rank by score)
     # ────────────────────────────────────────────────────────────────────────────
-    def search(self, query: str, *, user_id: str, limit: int = 5) -> Dict:
-        import numpy as np   # local import avoids global hard-dependency
+    def search(self, query: str, *, user_id: str, limit: int = 5, ltm_threshold: float = 0.75) -> Dict:
+        import numpy as np
 
         filters = {"user_id": user_id}
         qvec    = self.embedder.embed(query, "search")
 
-        # -------- long-term (vector DB) ----------------------------------------
-        lt_hits = self.vector_store.search(query=query, vectors=qvec, limit=limit, filters=filters)
+        # ---- LTM: vector store hits over threshold ----
+        lt_hits = self.vector_store.search(query=query, vectors=qvec, limit=10, filters=filters)
         lt_items = [
             MemoryItem(
                 id=h.id,
@@ -158,28 +158,24 @@ class Memory:
                 updated_at=h.payload.get("updated_at"),
                 score=h.score,
             ).model_dump()
-            for h in lt_hits
+            for h in lt_hits if h.score >= ltm_threshold
+        ][:3]  # Take top 3 above threshold
+
+        # ---- STM: last 5 turns only ----
+        st_buf = self.short_term.recent(user_id, limit=32)
+        st_items = [
+            MemoryItem(
+                id=it["id"],
+                memory=it["text"],
+                hash=None,
+                created_at=it["created"],
+                updated_at=None,
+                score=0.99,  # Artificially high score for ordering
+            ).model_dump()
+            for it in st_buf[-5:]
         ]
 
-        # -------- short-term (ring buffer) -------------------------------------
-        st_buf  = self.short_term.recent(user_id, limit=32)
-        st_items = []
-        if st_buf:
-            mat   = np.vstack([it["embedding"] for it in st_buf]).astype("float32")
-            sims  = (mat @ qvec) / (np.linalg.norm(mat, axis=1) * np.linalg.norm(qvec) + 1e-9)
-            for idx in np.argsort(sims)[::-1]:
-                st_items.append(
-                    MemoryItem(
-                        id=st_buf[idx]["id"],
-                        memory=st_buf[idx]["text"],
-                        hash=None,
-                        created_at=st_buf[idx]["created"],
-                        updated_at=None,
-                        score=float(sims[idx]),
-                    ).model_dump()
-                )
-
-        # -------- merge + rank --------------------------------------------------
+        # ---- Merge and return ----
         merged = sorted(lt_items + st_items, key=lambda x: x["score"], reverse=True)
         return {"results": merged[:limit]}
 
