@@ -34,7 +34,13 @@ def save_users(users: list):
 st.set_page_config(page_title="Memory Chat", layout="wide")
 
 if "users" not in st.session_state:
-    st.session_state.users = load_users() or [f"u-{uuid.uuid4().hex[:6]}"]
+    if os.path.exists(USERS_FILE):
+        st.session_state.users = load_users()
+    else:
+        default_user = f"u-{uuid.uuid4().hex[:6]}"
+        st.session_state.users = [default_user]
+        save_users(st.session_state.users)
+
 
 if "selected_user" not in st.session_state:
     st.session_state.selected_user = st.session_state.users[0]
