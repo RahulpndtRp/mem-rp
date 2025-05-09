@@ -200,3 +200,7 @@ class FAISS(BaseVectorStore):
         # rebuild empty index
         self._index = faiss.IndexFlatIP(self.dim) if self.metric_type == "IP" else faiss.IndexFlatL2(self.dim)
         self._save()
+
+
+
+

@@ -1,12 +1,16 @@
 import streamlit as st
-import uuid, os, json
+import uuid, os, json, asyncio
 
-# Set OpenAI key from Streamlit secrets
+from my_mem.client import AsyncMemoryClient
+from my_mem.configs.base import MemoryConfig, LlmConfig
+
+# Setup API key
 os.environ["OPENAI_API_KEY"] = st.secrets["openai"]["api_key"]
 
-from my_mem.client import MemoryClient
-from my_mem.configs.base import MemoryConfig
-
+# Config for async LLM
+config = MemoryConfig(
+    llm=LlmConfig(provider="openai_async", config={})
+)
 
 # -----------------------------
 # 📁 User Directory
@@ -26,35 +30,41 @@ def save_users(users: list):
         json.dump(users, f)
 
 # -----------------------------
-# 🧠 Memory Init
+# ✅ Streamlit Session Init
 # -----------------------------
 st.set_page_config(page_title="Memory Chat", layout="wide")
 
 if "users" not in st.session_state:
-    st.session_state.users = load_users() or [f"Agent-{uuid.uuid4().hex[:4]}"]
-    save_users(st.session_state.users)
+    st.session_state.users = load_users()
+    if not st.session_state.users:
+        default_user = f"Agent-{uuid.uuid4().hex[:4]}"
+        st.session_state.users = [default_user]
+        save_users(st.session_state.users)
 
-if "selected_user" not in st.session_state:
-    st.session_state.selected_user = st.session_state.users[0]
+if "selected_user" not in st.session_state or st.session_state.selected_user not in st.session_state.users:
+    if st.session_state.users:
+        st.session_state.selected_user = st.session_state.users[0]
+    else:
+        st.session_state.selected_user = f"Agent-{uuid.uuid4().hex[:4]}"
+        st.session_state.users = [st.session_state.selected_user]
+        save_users(st.session_state.users)
 
 if "mem" not in st.session_state:
-    st.session_state.mem = MemoryClient(MemoryConfig())
-mem = st.session_state.mem
+    st.session_state.mem = AsyncMemoryClient(config)
 
 if "session_chat" not in st.session_state:
     st.session_state.session_chat = []
 
+mem: AsyncMemoryClient = st.session_state.mem
+
 # -----------------------------
-# 🧠 Sidebar
+# 👤 Sidebar
 # -----------------------------
 with st.sidebar:
     st.markdown("### 👤 Select User")
-    if st.session_state.users:
-        selected_index = st.session_state.users.index(st.session_state.selected_user) if st.session_state.selected_user in st.session_state.users else 0
-        user = st.selectbox("User ID", st.session_state.users, index=selected_index)
-    else:
-        st.warning("No users available. Please add a new user.")
-        user = None
+    selected_index = st.session_state.users.index(st.session_state.selected_user)
+    user = st.selectbox("User ID", st.session_state.users, index=selected_index)
+
     if st.button("➕ Add User"):
         new_user = f"Agent-{uuid.uuid4().hex[:4]}"
         st.session_state.users.append(new_user)
@@ -68,7 +78,6 @@ with st.sidebar:
         st.session_state.session_chat = []
         st.rerun()
 
-    st.markdown("---")
     stream_enabled = st.checkbox("🔁 Enable Streaming", value=True)
     st.code(f"User ID: {st.session_state.selected_user}")
     st.success("Short-term + Long-term memory is active")
@@ -77,29 +86,23 @@ with st.sidebar:
         st.session_state.show_popup = True
 
     if st.session_state.get("show_popup", False):
-        st.warning("⚠️ Are you sure you want to delete all users? This cannot be undone.")
+        st.warning("⚠️ This action is irreversible.")
         col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button("✅ Yes, Clear"):
-                st.session_state.users = []
-                st.session_state.selected_user = ""
-                st.session_state.session_chat = []
-                save_users([])  # Clear users.json
-                st.success("✅ All users cleared.")
-                st.session_state.show_popup = False
-                st.rerun()
-
-        with col2:
-            if st.button("❌ Cancel"):
-                st.session_state.show_popup = False
+        if col1.button("✅ Confirm"):
+            st.session_state.users = []
+            st.session_state.selected_user = ""
+            st.session_state.session_chat = []
+            save_users([])
+            st.session_state.show_popup = False
+            st.rerun()
+        if col2.button("❌ Cancel"):
+            st.session_state.show_popup = False
         st.rerun()
-
 
 # -----------------------------
 # 💬 Display Chat
 # -----------------------------
-st.markdown("## 💬 Chat Memory Agent")
+st.markdown("## 💬 Memory Chat")
 
 for msg in st.session_state.session_chat:
     with st.chat_message("user"):
@@ -108,10 +111,11 @@ for msg in st.session_state.session_chat:
         st.markdown(msg.get("bot", "_Thinking..._"))
 
 # -----------------------------
-# ⌨️ Chat Input
+# ⌨️ Async Input Handler
 # -----------------------------
-user_input = st.chat_input("Type a message...")
-if user_input:
+user_input = st.chat_input("Type your message here...")
+
+async def handle_input(user_input: str):
     user_id = st.session_state.selected_user
     st.session_state.session_chat.append({"user": user_input})
 
@@ -123,21 +127,21 @@ if user_input:
             with st.spinner("🧠 Thinking (streaming)..."):
                 response_container = st.empty()
                 full_response = ""
-
-                for token in mem.stream_rag(user_input, user_id=user_id):
+                async for token in mem.stream_rag(user_input, user_id=user_id):
                     full_response += token
-                    response_container.markdown(full_response + "▌")  # typing indicator
-
+                    response_container.markdown(full_response + "▌")
                 response_container.markdown(full_response.strip())
                 st.session_state.session_chat[-1]["bot"] = full_response.strip()
         else:
             with st.spinner("🧠 Thinking..."):
-                result = mem.query_rag(user_input, user_id=user_id)
+                result = await mem.query_rag(user_input, user_id=user_id)
                 reply = result["answer"]
                 sources = [f"{s['id']}: {s['text']}" for s in result["sources"]]
-
                 full_reply = f"{reply.strip()}\n\n---\n**Sources:**\n" + "\n".join(f"• {s}" for s in sources[:3])
                 st.markdown(full_reply)
                 st.session_state.session_chat[-1]["bot"] = full_reply
 
     st.rerun()
+
+if user_input:
+    asyncio.run(handle_input(user_input))

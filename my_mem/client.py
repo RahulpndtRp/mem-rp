@@ -46,3 +46,37 @@ class MemoryClient:
     def reset_memory(self) -> None:
         """Resets FAISS + SQLite + STM buffers (if reset() supported)."""
         self.memory.reset()
+
+from my_mem.memory.main import AsyncMemory
+from my_mem.rag.rag_pipeline import AsyncRAGPipeline 
+
+from typing import Dict, Any, Optional, AsyncGenerator
+
+
+
+class AsyncMemoryClient:
+    """
+    High-level async interface for interacting with memory (STM + LTM) and RAG querying.
+    Mirrors the sync MemoryClient interface.
+    """
+    def __init__(self, config: Optional[MemoryConfig] = None, top_k: int = 5, ltm_threshold: float = 0.75):
+        self.memory = AsyncMemory(config)
+        self.rag    = AsyncRAGPipeline(self.memory, top_k=top_k, ltm_threshold=ltm_threshold)
+
+    async def add_message(self, text: str, *, user_id: str, infer: bool = True) -> Dict[str, Any]:
+        return await self.memory.add(text, user_id=user_id, infer=infer)
+
+    async def retrieve(self, query: str, *, user_id: str, limit: int = 5) -> Dict[str, Any]:
+        return await self.memory.search(query, user_id=user_id, limit=limit)
+
+    async def query_rag(self, prompt: str, *, user_id: str) -> Dict[str, Any]:
+        await self.memory.add(prompt, user_id=user_id, infer=True)
+        return await self.rag.query(prompt, user_id=user_id)
+
+    async def stream_rag(self, prompt: str, *, user_id: str):
+        await self.memory.add(prompt, user_id=user_id, infer=True)
+        async for token in self.rag.stream_query(prompt, user_id=user_id):
+            yield token
+
+    async def reset_memory(self) -> None:
+        await self.memory.reset()

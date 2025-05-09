@@ -12,8 +12,11 @@ from pydantic import BaseModel  # <-- added for Pylance
 #  Helpers                                                                    #
 # --------------------------------------------------------------------------- #
 def _load(path: str):
+    if not path:
+        raise ValueError("Factory received None for implementation path. Check provider_to_class mapping.")
     mod, cls = path.rsplit(".", 1)
     return getattr(import_module(mod), cls)
+
 
 def _ensure(obj: Union[Dict, "BaseModel"], cfg_cls: Type):
     """
@@ -37,6 +40,7 @@ from my_mem.vector_stores.base       import BaseVectorStore   # just for typing
 class LlmFactory:
     provider_to_class = {
         "openai": "my_mem.llms.openai.OpenAILLM",
+        "openai_async": "my_mem.llms.openai.AsyncOpenAILLM",  # ✅ Add this line
     }
 
     @classmethod
@@ -61,6 +65,9 @@ class EmbedderFactory:
         cfg: Union[Dict, BaseEmbedderConfig],
         _vector_cfg: Optional[Dict] = None,   # kept for compatibility
     ):
+        impl_path = cls.provider_to_class.get(provider)
+        if not impl_path:
+            raise ValueError(f"Unknown LLM provider: {provider}")
         impl = _load(cls.provider_to_class.get(provider))
         cfg_obj = _ensure(cfg, BaseEmbedderConfig)
         return impl(cfg_obj)

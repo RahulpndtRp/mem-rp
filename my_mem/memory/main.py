@@ -5,7 +5,7 @@ Slimmed-down but feature-complete Memory implementation.
   in the vector DB; procedural summaries optional).
 • Graph memory disabled by default (enable later).
 """
-
+import asyncio
 import concurrent.futures, hashlib, json, logging, os, uuid
 from copy     import deepcopy
 from datetime import datetime
@@ -211,3 +211,141 @@ class Memory:
         else:
             raise NotImplementedError("The current vector store does not support reset().")
 
+
+
+class AsyncMemory:
+    def __init__(self, config: MemoryConfig = MemoryConfig()):
+        self.cfg = config
+        self.embedder = EmbedderFactory.create(config.embedder.provider, config.embedder.config, config.vector_store.config)
+        self.vector_store: BaseVectorStore = VectorStoreFactory.create(config.vector_store.provider, config.vector_store.config)
+        self.llm = LlmFactory.create(config.llm.provider, config.llm.config)
+        self.db = SQLiteManager(config.history_db_path)
+        self.short_term = ShortTermMemory(max_items=32)
+
+        capture_event("memory.init", self, {"sync_type": "async"})
+
+    async def add(self, message: str, *, user_id: str, infer: bool = True) -> Dict:
+        msg_vec = await asyncio.to_thread(self.embedder.embed, message, "add")
+        self.short_term.add(user_id, message, msg_vec)
+
+        metadata = {"user_id": user_id}
+        filters = {"user_id": user_id}
+
+        if not infer:
+            mem_id = await self._create_memory(message, msg_vec, metadata)
+            return {"results": [{"id": mem_id, "memory": message, "event": "ADD"}]}
+
+        # Fact extraction
+        system_prompt, user_prompt = FACT_RETRIEVAL_PROMPT, f"Input:\n{message}"
+        resp = await asyncio.to_thread(self.llm.generate_response_async, [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ], {"type": "json_object"})
+        try:
+            facts = json.loads(remove_code_blocks(resp))["facts"]
+        except Exception:
+            facts = []
+
+        if not facts:
+            return {"results": []}
+
+        # Search for overlaps
+        existing = {}
+        for fact in facts:
+            vec = await asyncio.to_thread(self.embedder.embed, fact, "add")
+            hits = await asyncio.to_thread(self.vector_store.search, fact, vec, 5, filters)
+            for h in hits:
+                existing[h.id] = h.payload["data"]
+
+        old_mem_list = [{"id": k, "text": v} for k, v in existing.items()]
+        prompt = get_update_memory_messages(old_mem_list, facts, self.cfg.custom_update_memory_prompt)
+        resp = await asyncio.to_thread(self.llm.generate_response, [{"role": "user", "content": prompt}], {"type": "json_object"})
+
+        try:
+            actions = json.loads(remove_code_blocks(resp))["memory"]
+        except Exception:
+            logger.error("LLM update-memory JSON parse failure – storing all as ADD")
+            actions = [{"id": str(uuid.uuid4()), "text": f, "event": "ADD"} for f in facts]
+
+        results = []
+        for act in actions:
+            ev = act["event"]
+            if ev == "ADD":
+                vec = await asyncio.to_thread(self.embedder.embed, act["text"], "add")
+                mid = await self._create_memory(act["text"], vec, deepcopy(metadata))
+                results.append({"id": mid, "memory": act["text"], "event": "ADD"})
+            elif ev == "UPDATE":
+                vec = await asyncio.to_thread(self.embedder.embed, act["text"], "update")
+                await self._update_memory(act["id"], act["text"], vec, deepcopy(metadata))
+                results.append({"id": act["id"], "memory": act["text"], "event": "UPDATE", "previous_memory": act.get("old_memory")})
+            elif ev == "DELETE":
+                await self._delete_memory(act["id"])
+                results.append({"id": act["id"], "memory": act["text"], "event": "DELETE"})
+            else:
+                results.append({"id": act["id"], "memory": act["text"], "event": "NONE"})
+
+        capture_event("memory.add", self, {"facts": len(facts)})
+        return {"results": results}
+
+    async def search(self, query: str, *, user_id: str, limit: int = 5, ltm_threshold: float = 0.75) -> Dict:
+        import numpy as np
+
+        filters = {"user_id": user_id}
+        qvec = await asyncio.to_thread(self.embedder.embed, query, "search")
+
+        lt_hits = await asyncio.to_thread(self.vector_store.search, query, qvec, 10, filters)
+        lt_items = [
+            MemoryItem(
+                id=h.id,
+                memory=h.payload["data"],
+                hash=h.payload.get("hash"),
+                created_at=h.payload.get("created_at"),
+                updated_at=h.payload.get("updated_at"),
+                score=h.score,
+            ).model_dump()
+            for h in lt_hits if h.score >= ltm_threshold
+        ][:3]
+
+        st_buf = self.short_term.recent(user_id, limit=32)
+        st_items = [
+            MemoryItem(
+                id=it["id"],
+                memory=it["text"],
+                hash=None,
+                created_at=it["created"],
+                updated_at=None,
+                score=0.99,
+            ).model_dump()
+            for it in st_buf[-5:]
+        ]
+
+        merged = sorted(lt_items + st_items, key=lambda x: x["score"], reverse=True)
+        return {"results": merged[:limit]}
+
+    async def _create_memory(self, data: str, vec, meta: Dict) -> str:
+        mid = str(uuid.uuid4())
+        now = datetime.now(pytz.timezone("UTC")).isoformat()
+        meta.update({"data": data, "hash": hashlib.md5(data.encode()).hexdigest(), "created_at": now, "__vector": vec})
+        await asyncio.to_thread(self.vector_store.insert, [vec], [mid], [meta])
+        await asyncio.to_thread(self.db.add_history, mid, None, data, "ADD", created_at=now)
+        return mid
+
+    async def _update_memory(self, mid, new_data, vec, meta):
+        existing = await asyncio.to_thread(self.vector_store.search, "", vec, 1, {})
+        created = existing[0].payload.get("created_at") if existing else None
+        now = datetime.now(pytz.timezone("UTC")).isoformat()
+        meta.update({"data": new_data, "hash": hashlib.md5(new_data.encode()).hexdigest(),
+                     "created_at": created, "updated_at": now, "__vector": vec})
+        await asyncio.to_thread(self.vector_store.update, mid, vec, meta)
+        await asyncio.to_thread(self.db.add_history, mid, existing[0].payload["data"] if existing else None,
+                                new_data, "UPDATE", created_at=created, updated_at=now)
+
+    async def _delete_memory(self, mid):
+        await asyncio.to_thread(self.vector_store.delete, mid)
+        await asyncio.to_thread(self.db.add_history, mid, None, None, "DELETE", is_deleted=1)
+
+    async def reset(self):
+        if hasattr(self.vector_store, "reset"):
+            await asyncio.to_thread(self.vector_store.reset)
+        else:
+            raise NotImplementedError("The current vector store does not support reset().")

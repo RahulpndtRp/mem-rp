@@ -12,9 +12,9 @@ Author: chatGPT (2025-05-09)
 from __future__ import annotations
 
 import logging
-from typing import List, Dict, Any, Tuple, Generator
+from typing import List, Dict, Any, Tuple, Generator, AsyncGenerator
 
-from my_mem.memory.main       import Memory
+from my_mem.memory.main       import Memory, AsyncMemory
 from my_mem.utils.factory     import LlmFactory
 from my_mem.configs.base      import MemoryConfig
 logger = logging.getLogger(__name__)
@@ -88,8 +88,6 @@ class RAGPipeline:
             ]
         )
 
-
-
     # internal ------------------------------------------------------------
     def _ask_llm(self, question: str, context: str) -> str:
         messages = [
@@ -99,6 +97,43 @@ class RAGPipeline:
         ]
         resp = self.llm.generate_response(messages=messages)
         return resp.strip()
+
+
+
+class AsyncRAGPipeline:
+    def __init__(self, memory: AsyncMemory, top_k: int = 5, ltm_threshold: float = 0.75):
+        self.memory = memory
+        self.top_k = top_k
+        self.ltm_threshold = ltm_threshold
+        self.llm = memory.llm
+
+    async def query(self, query: str, *, user_id: str) -> Dict[str, Any]:
+        results = (await self.memory.search(query, user_id=user_id, limit=self.top_k, ltm_threshold=self.ltm_threshold))["results"]
+        logger.debug(f"RAG retrieved {len(results)} memories")
+        context_block, sources = _build_context(results)
+        answer = await self._ask_llm(query, context_block)
+        return {"answer": answer, "sources": sources}
+
+    async def stream_query(self, query: str, *, user_id: str) -> AsyncGenerator[str, None, None]:
+        results = (await self.memory.search(query, user_id=user_id, limit=self.top_k, ltm_threshold=self.ltm_threshold))["results"]
+        context_block, _ = _build_context(results)
+        system_msg = _CITATION_SYSTEM_PROMPT
+        user_msg = f"Context:\n{context_block}\n\nQ: {query}"
+        async for chunk in self.llm.stream_response_async([
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg}
+        ]):
+            yield chunk
+
+    async def _ask_llm(self, query: str, context: str) -> str:
+        messages = [
+            {"role": "system", "content": _CITATION_SYSTEM_PROMPT},
+            {"role": "system", "content": f"Context:\n{context}"},
+            {"role": "user", "content": query}
+        ]
+        return await self.llm.generate_response_async(messages)
+
+
 
 
 # ----------------------------------------------------------------------- #
@@ -113,3 +148,7 @@ def get_default_rag(top_k: int = 5) -> RAGPipeline:
     """
     mem   = Memory(MemoryConfig())        # uses default FAISS cfg etc.
     return RAGPipeline(mem, top_k=top_k)
+
+
+
+
