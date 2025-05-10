@@ -237,10 +237,13 @@ class AsyncMemory:
 
         # Fact extraction
         system_prompt, user_prompt = FACT_RETRIEVAL_PROMPT, f"Input:\n{message}"
-        resp = await asyncio.to_thread(self.llm.generate_response_async, [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ], {"type": "json_object"})
+        resp = await self.llm.generate_response_async(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
         try:
             facts = json.loads(remove_code_blocks(resp))["facts"]
         except Exception:
@@ -259,7 +262,7 @@ class AsyncMemory:
 
         old_mem_list = [{"id": k, "text": v} for k, v in existing.items()]
         prompt = get_update_memory_messages(old_mem_list, facts, self.cfg.custom_update_memory_prompt)
-        resp = await asyncio.to_thread(self.llm.generate_response, [{"role": "user", "content": prompt}], {"type": "json_object"})
+        resp = await asyncio.to_thread(self.llm.generate_response_async, [{"role": "user", "content": prompt}], {"type": "json_object"})
 
         try:
             actions = json.loads(remove_code_blocks(resp))["memory"]
@@ -349,3 +352,71 @@ class AsyncMemory:
             await asyncio.to_thread(self.vector_store.reset)
         else:
             raise NotImplementedError("The current vector store does not support reset().")
+
+    async def add_procedural_memory(
+    self,
+    messages: List[Dict[str, str]],
+    user_id: str,
+    prompt: Optional[str] = None,
+    ) -> Dict:
+        """
+        Summarizes a chat history into a procedural memory and stores it.
+
+        Args:
+            messages: Chat history [{"role": "user"/"assistant", "content": "..."}]
+            user_id: ID to associate the procedural memory with
+            prompt: Optional system prompt override
+
+        Returns:
+            Dict with one ADD result containing procedural summary
+        """
+        logger.info(f"Generating procedural memory for user_id={user_id}")
+
+        # Prompt + generate procedural summary
+        prompt_msgs = [
+            {"role": "system", "content": prompt or PROCEDURAL_MEMORY_SYSTEM_PROMPT},
+            *messages,
+            {"role": "user", "content": "Create procedural memory of the above conversation."},
+        ]
+
+        try:
+            summary = await self.llm.generate_response_async(prompt_msgs)
+        except Exception as e:
+            logger.error(f"Failed to summarize procedural memory: {e}")
+            raise
+
+        # Embed + insert into vector store
+        vec = await asyncio.to_thread(self.embedder.embed, summary, "add")
+        mid = str(uuid.uuid4())
+        now = datetime.now(pytz.timezone("UTC")).isoformat()
+        metadata = {
+            "user_id": user_id,
+            "data": summary,
+            "hash": hashlib.md5(summary.encode()).hexdigest(),
+            "created_at": now,
+            "memory_type": "procedural"
+        }
+
+        await asyncio.to_thread(self.vector_store.insert, [vec], [metadata], [mid])
+        await asyncio.to_thread(self.db.add_history, mid, None, summary, "ADD", created_at=now)
+
+        return {"results": [{"id": mid, "memory": summary, "event": "ADD"}]}
+    
+    async def get_all(self, user_id: str) -> Dict:
+        filters = {"user_id": user_id}
+        memories = await asyncio.to_thread(self.vector_store.list, filters=filters, limit=100)
+
+        results = [
+            {
+                "id": mem.id,
+                "memory": mem.payload.get("data", ""),
+                "metadata": {k: v for k, v in mem.payload.items() if k not in {"data", "__vector"}},
+            }
+            for mem in memories[0]  # because FAISS returns (results, None)
+        ]
+        return {"results": results}
+
+    async def delete_all(self, user_id: str) -> None:
+        filters = {"user_id": user_id}
+        await asyncio.to_thread(self.vector_store.delete_col)  # OR delete with filters
+        self.short_term.clear(user_id)
